@@ -26,14 +26,15 @@ if not http_api then
     )
 end
 
--- TODO(implementation phase): load submodules
--- dofile(modpath .. "/src/config.lua")
--- dofile(modpath .. "/src/state.lua")
--- dofile(modpath .. "/src/bot_entity.lua")
--- dofile(modpath .. "/src/chat.lua")
--- dofile(modpath .. "/src/http.lua")
--- dofile(modpath .. "/src/planner.lua")
--- dofile(modpath .. "/src/executor.lua")
+-- Load order matters: config/state first (no deps), executor before bot_entity
+-- (bot_entity's do_custom references executor), planner before chat (chat calls it).
+dofile(modpath .. "/src/config.lua")
+dofile(modpath .. "/src/state.lua")
+dofile(modpath .. "/src/executor.lua")
+dofile(modpath .. "/src/http.lua")
+dofile(modpath .. "/src/planner.lua")
+dofile(modpath .. "/src/bot_entity.lua")
+dofile(modpath .. "/src/chat.lua")
 
 core.log("action",
     "[aibot] loaded (skeleton, implementation pending). " ..
