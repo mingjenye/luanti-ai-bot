@@ -20,7 +20,7 @@ aibot = {
 
 if not http_api then
     core.log("warning",
-        "[aibot] core.request_http_api() returned nil. " ..
+        "[aibot mod] core.request_http_api() returned nil. " ..
         "LLM features disabled. To enable, add 'secure.http_mods = aibot' " ..
         "to minetest.conf and restart the server."
     )
@@ -30,6 +30,7 @@ end
 -- (bot_entity's do_custom references executor), planner before chat (chat calls it).
 dofile(modpath .. "/src/config.lua")
 dofile(modpath .. "/src/state.lua")
+dofile(modpath .. "/src/inventory.lua")
 dofile(modpath .. "/src/executor.lua")
 dofile(modpath .. "/src/http.lua")
 dofile(modpath .. "/src/planner.lua")
@@ -37,6 +38,6 @@ dofile(modpath .. "/src/bot_entity.lua")
 dofile(modpath .. "/src/chat.lua")
 
 core.log("action",
-    "[aibot] loaded (skeleton, implementation pending). " ..
+    "[aibot mod] loaded (skeleton, implementation pending). " ..
     "HTTP API: " .. (http_api and "available" or "unavailable — see warning above")
 )

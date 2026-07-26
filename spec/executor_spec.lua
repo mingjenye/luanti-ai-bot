@@ -251,46 +251,288 @@ describe("ACTIONS.go_to distance guard (frank safety review)", function()
     end)
 end)
 
-describe("ACTIONS.pickup_nearby is safe pre-M2b (frank safety review)", function()
-    local sent
-    local removed_count
-    local luaentity
+-- ═══ ACTIONS.pickup_nearby (M2b — real inventory) ═════════════════════
+describe("ACTIONS.pickup_nearby with detached inventory", function()
+    local sent, removed_count, luaentity, inv_stub
+
+    local function fake_item_ent(itemstring)
+        return {
+            name = "__builtin:item",
+            itemstring = itemstring,
+        }
+    end
 
     before_each(function()
         sent = {}
         removed_count = 0
         _G.core = helpers.fresh_core()
-        _G.core.chat_send_player = function(name, msg) table.insert(sent, msg) end
+        _G.core.chat_send_player = function(_, msg) table.insert(sent, msg) end
+        _G.aibot = {}
+        _G.mobs = {}
+        helpers.install_itemstack()
+        helpers.load_source("src/executor.lua")
+        inv_stub = helpers.stub_inventory()
+        _G.aibot.inventory = inv_stub
+        luaentity = helpers.fresh_luaentity()
+        luaentity._bot_id = "test-bot"
+    end)
+
+    it("picks up items and removes their entities on success", function()
         _G.core.get_objects_inside_radius = function()
-            -- fake: 3 dropped items in radius
-            local items = {}
+            local objs = {}
             for i = 1, 3 do
-                items[i] = {
-                    get_luaentity = function() return { name = "__builtin:item" } end,
-                    remove = function() removed_count = removed_count + 1 end,
+                local ent = fake_item_ent("default:tree")
+                objs[i] = {
+                    get_luaentity = function() return ent end,
+                    remove        = function() removed_count = removed_count + 1 end,
                 }
             end
-            return items
+            return objs
+        end
+        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
+        assert.are.equal(3, removed_count)
+        assert.are.equal(3, #inv_stub._contents)
+        assert.matches("撿了 3 個", sent[#sent])
+    end)
+
+    it("does NOT remove item entity when inventory is full", function()
+        inv_stub:_set_full(true)
+        _G.core.get_objects_inside_radius = function()
+            local ent = fake_item_ent("default:tree")
+            return {{
+                get_luaentity = function() return ent end,
+                remove        = function() removed_count = removed_count + 1 end,
+            }}
+        end
+        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
+        assert.are.equal(0, removed_count)   -- invariant
+        assert.matches("裝不下", sent[#sent])
+    end)
+
+    it("skips items not matching item_name filter", function()
+        _G.core.get_objects_inside_radius = function()
+            return {
+                { get_luaentity = function() return fake_item_ent("default:tree") end, remove = function() end },
+                { get_luaentity = function() return fake_item_ent("default:stone") end, remove = function() end },
+                { get_luaentity = function() return fake_item_ent("default:tree") end, remove = function() end },
+            }
+        end
+        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { item_name = "default:tree", radius = 3 })
+        -- 2 trees picked up, 1 stone skipped
+        assert.are.equal(2, #inv_stub._contents)
+        assert.matches("非目標物品", sent[#sent])
+    end)
+
+    it("reports nothing to pick up when radius has no items", function()
+        _G.core.get_objects_inside_radius = function() return {} end
+        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
+        assert.matches("沒有可撿", sent[#sent])
+    end)
+
+    it("ignores non-item entities (mobs, players)", function()
+        _G.core.get_objects_inside_radius = function()
+            return {
+                { get_luaentity = function() return { name = "mobs:cow" } end, remove = function() removed_count = removed_count + 1 end },
+                { get_luaentity = function() return nil end,                    remove = function() removed_count = removed_count + 1 end },
+            }
+        end
+        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
+        assert.are.equal(0, removed_count)
+        assert.are.equal(0, #inv_stub._contents)
+    end)
+end)
+
+-- ═══ ACTIONS.drop_to_player (M2b) ══════════════════════════════════════
+describe("ACTIONS.drop_to_player", function()
+    local sent, dropped_items, luaentity, inv_stub
+
+    before_each(function()
+        sent = {}
+        dropped_items = {}
+        _G.core = helpers.fresh_core()
+        _G.core.chat_send_player = function(_, msg) table.insert(sent, msg) end
+        _G.core.add_item = function(pos, stack) table.insert(dropped_items, { pos = pos, stack = stack }) end
+        _G.core.get_player_by_name = function(name)
+            return { get_pos = function() return { x = 5, y = 64, z = 5 } end }
         end
         _G.aibot = {}
         _G.mobs = {}
+        helpers.install_itemstack()
         helpers.load_source("src/executor.lua")
         luaentity = helpers.fresh_luaentity()
+        luaentity._bot_id = "test-bot"
+        luaentity.object.get_pos = function() return { x = 5, y = 64, z = 5 } end  -- near owner
     end)
 
-    it("does NOT remove item entities (avoids data loss until inventory exists)", function()
-        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
-        assert.are.equal(0, removed_count)   -- CRITICAL: no items destroyed
+    it("warns and returns when owner is offline", function()
+        _G.core.get_player_by_name = function() return nil end
+        _G.aibot.inventory = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+        })
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, {})
+        assert.are.equal(0, #dropped_items)
+        assert.matches("找不到主人", sent[#sent])
     end)
 
-    it("reports visible drop count to owner", function()
-        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
-        assert.is_true(#sent > 0)
-        assert.matches("3 個掉落物", sent[#sent])
+    it("drops all stacks from bot inventory at bot position", function()
+        _G.aibot.inventory = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+            helpers.fake_itemstack("default:stone 3"),
+        })
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, {})
+        assert.are.equal(2, #dropped_items)
+        assert.matches("送了 2", sent[#sent])
     end)
 
-    it("mentions M2b as when pickup will be enabled", function()
-        _G.aibot.executor.ACTIONS.pickup_nearby(luaentity, { radius = 3 })
-        assert.matches("M2b", sent[#sent])
+    it("filters by item_name arg", function()
+        inv_stub = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+            helpers.fake_itemstack("default:stone 3"),
+            helpers.fake_itemstack("default:tree 2"),
+        })
+        _G.aibot.inventory = inv_stub
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, { item_name = "default:tree" })
+        assert.are.equal(2, #dropped_items)  -- 2 tree stacks dropped
+        assert.are.equal(1, #inv_stub._contents)  -- stone remains
+    end)
+
+    it("respects count limit", function()
+        inv_stub = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+            helpers.fake_itemstack("default:tree 5"),
+            helpers.fake_itemstack("default:tree 5"),
+        })
+        _G.aibot.inventory = inv_stub
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, { count = 2 })
+        assert.are.equal(2, #dropped_items)
+        assert.are.equal(1, #inv_stub._contents)
+    end)
+
+    it("warns when inventory is empty", function()
+        _G.aibot.inventory = helpers.stub_inventory({})
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, {})
+        assert.are.equal(0, #dropped_items)
+        assert.matches("背包空", sent[#sent])
+    end)
+
+    it("warns when filter matches nothing in inventory", function()
+        _G.aibot.inventory = helpers.stub_inventory({
+            helpers.fake_itemstack("default:stone 3"),
+        })
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, { item_name = "default:diamond" })
+        assert.are.equal(0, #dropped_items)
+        assert.matches("背包裡沒有", sent[#sent])
+    end)
+
+    it("warns when bot is far from owner but still drops", function()
+        _G.core.get_player_by_name = function()
+            return { get_pos = function() return { x = 100, y = 64, z = 100 } end }
+        end
+        _G.aibot.inventory = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+        })
+        _G.aibot.executor.ACTIONS.drop_to_player(luaentity, {})
+        assert.are.equal(1, #dropped_items)
+        -- Two messages: distance warning + success
+        assert.is_true(#sent >= 2)
+        local joined = table.concat(sent, "|")
+        assert.matches("go_to", joined)
+    end)
+end)
+
+-- ═══ ACTIONS.drop_to_chest (M2b) ═══════════════════════════════════════
+describe("ACTIONS.drop_to_chest", function()
+    local sent, luaentity, chest_inv_contents
+
+    before_each(function()
+        sent = {}
+        chest_inv_contents = {}
+        _G.core = helpers.fresh_core()
+        _G.core.chat_send_player = function(_, msg) table.insert(sent, msg) end
+        _G.core.get_inventory = function(spec)
+            if spec.type == "node" then
+                return {
+                    get_list = function() return chest_inv_contents end,
+                    add_item = function(_, _, stack)
+                        table.insert(chest_inv_contents, stack)
+                        return helpers.fake_itemstack("")  -- no leftover
+                    end,
+                }
+            end
+        end
+        _G.aibot = {}
+        _G.mobs = {}
+        helpers.install_itemstack()
+        helpers.load_source("src/executor.lua")
+        luaentity = helpers.fresh_luaentity()
+        luaentity._bot_id = "test-bot"
+        luaentity.object.get_pos = function() return { x = 5, y = 64, z = 5 } end
+    end)
+
+    it("rejects missing coordinates", function()
+        _G.aibot.executor.ACTIONS.drop_to_chest(luaentity, {})
+        assert.matches("需要", sent[#sent])
+    end)
+
+    it("rejects when chest is beyond MAX_CHEST_DISTANCE", function()
+        _G.aibot.inventory = helpers.stub_inventory({ helpers.fake_itemstack("default:tree 5") })
+        _G.aibot.executor.ACTIONS.drop_to_chest(luaentity, { x = 100, y = 64, z = 100 })
+        assert.matches("太遠", sent[#sent])
+    end)
+
+    it("rejects when node at pos has no inventory", function()
+        _G.core.get_inventory = function() return nil end
+        _G.aibot.inventory = helpers.stub_inventory({ helpers.fake_itemstack("default:tree 5") })
+        _G.aibot.executor.ACTIONS.drop_to_chest(luaentity, { x = 6, y = 64, z = 5 })
+        assert.matches("chest", sent[#sent]:lower())
+    end)
+
+    it("moves stacks from bot inventory to chest inventory", function()
+        _G.aibot.inventory = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+            helpers.fake_itemstack("default:stone 3"),
+        })
+        _G.aibot.executor.ACTIONS.drop_to_chest(luaentity, { x = 6, y = 64, z = 5 })
+        assert.are.equal(2, #chest_inv_contents)
+        assert.matches("放了 2", sent[#sent])
+    end)
+
+    it("reports empty when bot inventory has nothing", function()
+        _G.aibot.inventory = helpers.stub_inventory({})
+        _G.aibot.executor.ACTIONS.drop_to_chest(luaentity, { x = 6, y = 64, z = 5 })
+        assert.matches("背包空", sent[#sent])
+    end)
+end)
+
+-- ═══ ACTIONS.query_inventory (M2b) ═════════════════════════════════════
+describe("ACTIONS.query_inventory", function()
+    local sent, luaentity
+
+    before_each(function()
+        sent = {}
+        _G.core = helpers.fresh_core()
+        _G.core.chat_send_player = function(_, msg) table.insert(sent, msg) end
+        _G.aibot = {}
+        _G.mobs = {}
+        helpers.install_itemstack()
+        helpers.load_source("src/executor.lua")
+        luaentity = helpers.fresh_luaentity()
+        luaentity._bot_id = "test-bot"
+    end)
+
+    it("reports '空的' when bot has nothing", function()
+        _G.aibot.inventory = helpers.stub_inventory({})
+        _G.aibot.executor.ACTIONS.query_inventory(luaentity, {})
+        assert.matches("空的", sent[#sent])
+    end)
+
+    it("lists stack name and count for each entry", function()
+        _G.aibot.inventory = helpers.stub_inventory({
+            helpers.fake_itemstack("default:tree 5"),
+            helpers.fake_itemstack("default:stone 3"),
+        })
+        _G.aibot.executor.ACTIONS.query_inventory(luaentity, {})
+        assert.matches("default:tree x5", sent[#sent])
+        assert.matches("default:stone x3", sent[#sent])
     end)
 end)

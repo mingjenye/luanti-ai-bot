@@ -22,12 +22,17 @@ function aibot.executor.distance(a, b)
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
+-- All bot-authored chat lines use the [AIBot] prefix (unified per DeepSeek
+-- UX review; system messages in src/chat.lua use the same prefix).
 local function say(luaentity, text)
     if luaentity._owner then
-        core.chat_send_player(luaentity._owner, "[Bot] " .. text)
+        core.chat_send_player(luaentity._owner, "[AIBot] " .. text)
     end
 end
 aibot.executor.say = say
+
+-- Distance limit for drop_to_chest: LLM must have go_to'd the chest first.
+local MAX_CHEST_DISTANCE = 5
 
 -- ─── target resolution ──────────────────────────────────────────
 -- LLM gives target descriptions ("nearest tree"); we resolve here at execution
@@ -112,30 +117,118 @@ ACTIONS.go_to = function(self, args)
 end
 
 ACTIONS.pickup_nearby = function(self, args)
-    -- Safety (frank safety review): do NOT remove item entities before we
-    -- have a real inventory to store them in. Data loss is worse than a
-    -- stub. This action becomes real in M2b when detached inventory lands.
+    -- Invariant (frank safety review): only remove an item entity AFTER its
+    -- ItemStack has been successfully added to the bot's inventory. On
+    -- inventory-full, the item stays on the ground (no data loss).
     local pos = self.object:get_pos()
     local radius = tonumber(args.radius) or 3
+    local filter = args.item_name  -- optional
     local objects = core.get_objects_inside_radius(pos, radius)
-    local visible = 0
+    local picked, skipped_full, skipped_filter = 0, 0, 0
     for _, obj in ipairs(objects) do
         local ent = obj:get_luaentity()
         if ent and ent.name == "__builtin:item" then
-            visible = visible + 1
+            local stack = ItemStack(ent.itemstring or "")
+            if stack:is_empty() then
+                -- nothing
+            elseif filter and stack:get_name() ~= filter then
+                skipped_filter = skipped_filter + 1
+            else
+                local ok, _ = aibot.inventory.add_stack(self._bot_id, stack)
+                if ok then
+                    obj:remove()
+                    picked = picked + 1
+                else
+                    skipped_full = skipped_full + 1
+                end
+            end
         end
     end
-    say(self, string.format(
-        "附近有 %d 個掉落物（撿取功能等 M2b detached inventory 完成後啟用；目前不動它們避免資料遺失）",
-        visible))
+    local msg = string.format("撿了 %d 個 stack", picked)
+    if skipped_full > 0 then msg = msg .. "，" .. skipped_full .. " 個裝不下" end
+    if skipped_filter > 0 then msg = msg .. "，" .. skipped_filter .. " 個非目標物品" end
+    if picked == 0 and skipped_full == 0 and skipped_filter == 0 then
+        msg = "附近沒有可撿的物品"
+    end
+    say(self, msg)
 end
 
 ACTIONS.drop_to_player = function(self, args)
-    say(self, "TODO: drop_to_player 尚未實作（等 detached inventory）")
+    -- Drops at the bot's current position. LLM is expected to have already
+    -- go_to'd the owner. If bot is far from owner, we warn but still drop.
+    local player = core.get_player_by_name(self._owner)
+    if not player then
+        say(self, "找不到主人，無法送物")
+        return
+    end
+    local bot_pos = self.object:get_pos()
+    local owner_pos = player:get_pos()
+    if aibot.executor.distance(bot_pos, owner_pos) > 5 then
+        say(self, string.format("我離主人 %d blocks（>5），先叫我 go_to 你再 drop 更好",
+            math.floor(aibot.executor.distance(bot_pos, owner_pos))))
+        -- fall through and drop anyway; owner may pick up on their way
+    end
+    local filter = args.item_name  -- optional
+    local max_count = tonumber(args.count)
+    local dropped = 0
+    while true do
+        if max_count and dropped >= max_count then break end
+        local stack = aibot.inventory.take_stack(self._bot_id, filter)
+        if not stack or stack:is_empty() then break end
+        core.add_item(bot_pos, stack)
+        dropped = dropped + 1
+    end
+    if dropped == 0 then
+        if filter then
+            say(self, "背包裡沒有 " .. filter)
+        else
+            say(self, "背包空的，沒東西送")
+        end
+    else
+        say(self, "送了 " .. dropped .. " 個 stack")
+    end
 end
 
 ACTIONS.drop_to_chest = function(self, args)
-    say(self, "TODO: drop_to_chest 尚未實作")
+    if not (args.x and args.y and args.z) then
+        say(self, "drop_to_chest 需要 x/y/z 座標")
+        return
+    end
+    local chest_pos = {
+        x = tonumber(args.x), y = tonumber(args.y), z = tonumber(args.z),
+    }
+    if not (chest_pos.x and chest_pos.y and chest_pos.z) then
+        say(self, "座標無效")
+        return
+    end
+    local bot_pos = self.object:get_pos()
+    if aibot.executor.distance(bot_pos, chest_pos) > MAX_CHEST_DISTANCE then
+        say(self, string.format("離 chest 太遠（>%d blocks），先 go_to 再 drop",
+            MAX_CHEST_DISTANCE))
+        return
+    end
+    local chest_inv = core.get_inventory({ type = "node", pos = chest_pos })
+    if not chest_inv or not chest_inv:get_list("main") then
+        say(self, "那個位置沒有 chest（或 chest 沒 main list）")
+        return
+    end
+    local moved = 0
+    while true do
+        local stack = aibot.inventory.take_stack(self._bot_id)
+        if not stack or stack:is_empty() then break end
+        local leftover = chest_inv:add_item("main", stack)
+        if leftover and not leftover:is_empty() then
+            -- chest full: put back and stop
+            aibot.inventory.add_stack(self._bot_id, leftover)
+            break
+        end
+        moved = moved + 1
+    end
+    if moved == 0 then
+        say(self, "背包空的，沒東西放")
+    else
+        say(self, "放了 " .. moved .. " 個 stack 進 chest")
+    end
 end
 
 ACTIONS.query_recipe = function(self, args)
@@ -153,8 +246,8 @@ ACTIONS.query_recipe = function(self, args)
 end
 
 ACTIONS.query_inventory = function(self, args)
-    -- MVP: return placeholder until detached inventory is wired
-    say(self, "TODO: query_inventory 尚未實作（等 detached inventory）")
+    local summary = aibot.inventory.summary(self._bot_id)
+    say(self, "身上：" .. aibot.inventory.format_summary(summary))
 end
 
 -- ─── queue + tick ───────────────────────────────────────────────
@@ -190,3 +283,4 @@ end
 
 aibot.executor.ACTIONS = ACTIONS  -- exposed for planner (tool schema derivation)
 aibot.executor.MAX_GO_TO_DISTANCE = MAX_GO_TO_DISTANCE
+aibot.executor.MAX_CHEST_DISTANCE = MAX_CHEST_DISTANCE

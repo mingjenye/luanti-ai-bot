@@ -44,10 +44,23 @@ mobs:register_mob("aibot:companion", {
     end,
 
     on_die = function(self, pos)
+        if self._bot_id and aibot.inventory then
+            -- Bot dies: drop its inventory on the ground so the owner can
+            -- pick up what remains, then remove the inventory storage.
+            local drop_pos = pos or (self.object and self.object:get_pos())
+            local summary = aibot.inventory.summary(self._bot_id)
+            for _ = 1, #summary do
+                local stack = aibot.inventory.take_stack(self._bot_id)
+                if stack and not stack:is_empty() and drop_pos then
+                    core.add_item(drop_pos, stack)
+                end
+            end
+            aibot.inventory.destroy(self._bot_id)
+        end
         if self._owner then
             aibot.state.unregister_bot(self._owner)
             if core.get_player_by_name(self._owner) then
-                core.chat_send_player(self._owner, "[aibot] 你的 bot 死了")
+                core.chat_send_player(self._owner, "[AIBot] 你的 bot 死了，背包物品掉在死亡地點")
             end
         end
     end,
@@ -85,7 +98,12 @@ function aibot.spawn_bot(player)
     luaentity.tamed   = true
     luaentity.order   = "follow"
 
-    local nametag = "Bot (" .. player_name .. ")"
+    -- Give the bot its own detached inventory (M2b).
+    if aibot.inventory then
+        aibot.inventory.create(luaentity._bot_id)
+    end
+
+    local nametag = "AIBot (" .. player_name .. ")"
     obj:set_properties({ nametag = nametag, nametag_color = "#00ffcc" })
 
     aibot.state.register_bot(player_name, luaentity)
@@ -93,7 +111,7 @@ function aibot.spawn_bot(player)
     core.after(0.5, function()
         if core.get_player_by_name(player_name) then
             core.chat_send_player(player_name,
-                "[Bot] 我是你的 AI Bot，下指令請用 @bot 開頭。例：@bot 去砍 3 棵樹")
+                "[AIBot] 我是你的 AI Bot！用 @bot + 指令控制我，例如：@bot 砍樹")
         end
     end)
 

@@ -142,17 +142,17 @@ function aibot.planner.plan(luaentity, nl_command)
         { role = "user",   content = "World state: " .. snapshot .. "\n\nCommand: " .. nl_command },
     }
 
-    core.chat_send_player(owner, "[Bot] 收到，思考中…")
+    core.chat_send_player(owner, "[AIBot] 收到，思考中…")
 
     aibot.call_llm(messages, TOOL_SCHEMA, function(response, err)
         if err then
-            core.chat_send_player(owner, "[aibot] LLM 錯誤：" .. err)
+            core.chat_send_player(owner, "[AIBot] LLM 錯誤：" .. err)
             return
         end
 
         local calls = aibot.planner.parse_response(response, core.parse_json)
         if #calls == 0 then
-            core.chat_send_player(owner, "[aibot] LLM 沒回東西")
+            core.chat_send_player(owner, "[AIBot] LLM 沒回東西")
             return
         end
         for _, call in ipairs(calls) do
