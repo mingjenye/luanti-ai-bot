@@ -36,6 +36,7 @@ dofile(modpath .. "/src/http.lua")
 dofile(modpath .. "/src/planner.lua")
 dofile(modpath .. "/src/bot_entity.lua")
 dofile(modpath .. "/src/chat.lua")
+dofile(modpath .. "/src/lifecycle.lua")
 
 core.log("action",
     "[aibot mod] loaded (skeleton, implementation pending). " ..

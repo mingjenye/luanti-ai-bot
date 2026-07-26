@@ -504,6 +504,85 @@ describe("ACTIONS.drop_to_chest", function()
     end)
 end)
 
+-- ═══ Timeout + busy state (M2c gap #6) ════════════════════════════════
+describe("aibot.executor tick timeout + busy state", function()
+    local sent, luaentity, fake_time
+
+    before_each(function()
+        sent = {}
+        fake_time = 1000
+        _G.core = helpers.fresh_core()
+        _G.core.chat_send_player = function(_, msg) table.insert(sent, msg) end
+        _G.aibot = {}
+        _G.mobs = { gopath = function(_, self, target, cb) end }  -- never fires callback => stuck
+        helpers.install_itemstack()
+        helpers.load_source("src/executor.lua")
+        _G.aibot.executor.now = function() return fake_time end
+        luaentity = helpers.fresh_luaentity()
+        luaentity._bot_id = "test-bot"
+    end)
+
+    it("go_to marks bot busy and sets a task_deadline", function()
+        _G.aibot.executor.ACTIONS.go_to(luaentity, { x = 5, y = 64, z = 5 })
+        assert.is_true(luaentity._busy)
+        assert.is_number(luaentity._task_deadline)
+        assert.are.equal(fake_time + _G.aibot.executor.TASK_TIMEOUT_SECONDS,
+                         luaentity._task_deadline)
+    end)
+
+    it("tick does NOT dequeue new task while _busy is true", function()
+        _G.aibot.executor.queue(luaentity, "say", { text = "hi" })
+        assert.are.equal(1, #luaentity._task_queue)
+        luaentity._busy = true
+        _G.aibot.executor.tick(luaentity, 0.1)
+        assert.are.equal(1, #luaentity._task_queue)  -- unchanged
+    end)
+
+    it("tick does dequeue when not busy", function()
+        _G.aibot.executor.queue(luaentity, "say", { text = "hi" })
+        _G.aibot.executor.tick(luaentity, 0.1)
+        assert.are.equal(0, #luaentity._task_queue)
+    end)
+
+    it("tick force-cancels task when deadline exceeded", function()
+        _G.aibot.executor.queue(luaentity, "say", { text = "queued" })
+        luaentity._busy = true
+        luaentity._task_deadline = fake_time - 1  -- already expired
+        _G.aibot.executor.tick(luaentity, 0.1)
+        assert.is_false(luaentity._busy or false)
+        assert.is_nil(luaentity._task_deadline)
+        assert.are.equal(0, #luaentity._task_queue)  -- cancelled
+        local joined = table.concat(sent, "|")
+        assert.matches("超過.-秒", joined)
+    end)
+
+    it("tick allows task to continue while deadline not yet reached", function()
+        luaentity._busy = true
+        luaentity._task_deadline = fake_time + 10  -- 10s in future
+        _G.aibot.executor.tick(luaentity, 0.1)
+        assert.is_true(luaentity._busy)
+        assert.are.equal(fake_time + 10, luaentity._task_deadline)
+    end)
+
+    it("gopath callback clears _busy and _task_deadline", function()
+        local captured_cb
+        _G.mobs = { gopath = function(_, self, target, cb) captured_cb = cb end }
+        _G.aibot.executor.ACTIONS.go_to(luaentity, { x = 5, y = 64, z = 5 })
+        assert.is_true(luaentity._busy)
+        captured_cb()  -- simulate arrival
+        assert.is_falsy(luaentity._busy)
+        assert.is_nil(luaentity._task_deadline)
+    end)
+
+    it("cancel clears _busy and _task_deadline", function()
+        luaentity._busy = true
+        luaentity._task_deadline = fake_time + 10
+        _G.aibot.executor.cancel(luaentity)
+        assert.is_false(luaentity._busy)
+        assert.is_nil(luaentity._task_deadline)
+    end)
+end)
+
 -- ═══ ACTIONS.query_inventory (M2b) ═════════════════════════════════════
 describe("ACTIONS.query_inventory", function()
     local sent, luaentity

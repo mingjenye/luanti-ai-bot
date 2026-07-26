@@ -34,6 +34,13 @@ aibot.executor.say = say
 -- Distance limit for drop_to_chest: LLM must have go_to'd the chest first.
 local MAX_CHEST_DISTANCE = 5
 
+-- Max seconds any async task (e.g. pathfinding) may run before we force-stop.
+-- Prevents bots from getting stuck in gopath loops or blocked terrain forever.
+local TASK_TIMEOUT_SECONDS = 30
+
+-- Injection point for tests: swap out time source.
+aibot.executor.now = function() return os.time() end
+
 -- ─── target resolution ──────────────────────────────────────────
 -- LLM gives target descriptions ("nearest tree"); we resolve here at execution
 -- time against current world state. This is R3's mitigation pattern.
@@ -106,11 +113,17 @@ ACTIONS.go_to = function(self, args)
         return
     end
     if mobs and mobs.gopath then
+        -- Async: mark bot busy and set a deadline. Tick will force-stop
+        -- if the callback hasn't fired within TASK_TIMEOUT_SECONDS.
+        self._busy = true
+        self._task_deadline = aibot.executor.now() + TASK_TIMEOUT_SECONDS
         mobs:gopath(self, target_pos, function()
+            self._busy = false
+            self._task_deadline = nil
             say(self, "到了。")
         end)
     else
-        -- Fallback: set movement target directly
+        -- Fallback: set movement target directly (no pathfinding, no timeout).
         self._target_pos = target_pos
         say(self, "移動中（無 pathfinding fallback）")
     end
@@ -262,13 +275,26 @@ function aibot.executor.queue(luaentity, action_name, args)
 end
 
 function aibot.executor.cancel(luaentity)
-    luaentity._task_queue = {}
-    luaentity._bot_state  = "idle"
+    luaentity._task_queue    = {}
+    luaentity._bot_state     = "idle"
+    luaentity._busy          = false
+    luaentity._task_deadline = nil
     luaentity.order = "stand"
     luaentity.state = "stand"
 end
 
 function aibot.executor.tick(luaentity, dtime)
+    -- Timeout guard for async tasks (currently only go_to via mobs:gopath).
+    if luaentity._task_deadline and aibot.executor.now() > luaentity._task_deadline then
+        say(luaentity, "任務超過 " .. TASK_TIMEOUT_SECONDS .. " 秒未完成，自動停止")
+        aibot.executor.cancel(luaentity)
+        return
+    end
+    -- Do not dequeue new tasks while an async task is in-flight.
+    -- (Without this, drop_to_player queued after go_to would run BEFORE the
+    -- bot arrives at the owner.)
+    if luaentity._busy then return end
+
     if not luaentity._task_queue or #luaentity._task_queue == 0 then return end
     -- Execute one action per tick to keep interrupt latency low.
     local task = table.remove(luaentity._task_queue, 1)
@@ -282,5 +308,6 @@ function aibot.executor.tick(luaentity, dtime)
 end
 
 aibot.executor.ACTIONS = ACTIONS  -- exposed for planner (tool schema derivation)
-aibot.executor.MAX_GO_TO_DISTANCE = MAX_GO_TO_DISTANCE
-aibot.executor.MAX_CHEST_DISTANCE = MAX_CHEST_DISTANCE
+aibot.executor.MAX_GO_TO_DISTANCE   = MAX_GO_TO_DISTANCE
+aibot.executor.MAX_CHEST_DISTANCE   = MAX_CHEST_DISTANCE
+aibot.executor.TASK_TIMEOUT_SECONDS = TASK_TIMEOUT_SECONDS
