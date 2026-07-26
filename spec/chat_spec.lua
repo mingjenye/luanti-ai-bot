@@ -56,6 +56,13 @@ describe("aibot.chat.handle_message", function()
         assert.are.equal(0, #sent_messages)
     end)
 
+    it("returns false for similarly-prefixed non-matches (@boto, @bots)", function()
+        assert.is_false(chat.handle_message("henry", "@boto hi"))
+        assert.is_false(chat.handle_message("henry", "@bots hi"))
+        assert.is_false(chat.handle_message("henry", "@botCommand"))
+        assert.are.equal(0, #sent_messages)
+    end)
+
     -- ─── empty command ────────────────────────────────────────────
 
     it("prompts user when command is empty ('@bot' alone)", function()

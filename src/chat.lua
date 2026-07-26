@@ -12,9 +12,17 @@ local MAX_COMMAND_LEN = 500
 -- Returns true if we handled the message (Luanti should stop propagating),
 -- false if the message wasn't meant for us.
 function aibot.chat.handle_message(player_name, message)
-    local command = message:match("^@bot%s+(.*)")
-    if not command then return false end  -- not for us
-    command = command:gsub("^%s+", ""):gsub("%s+$", "")
+    -- Accept exactly "@bot" (empty command) OR "@bot" followed by whitespace
+    -- and any content. Reject "@boto", "@bots" etc. — the char after "@bot"
+    -- must be end-of-string or whitespace.
+    local rest
+    if message == "@bot" then
+        rest = ""
+    else
+        rest = message:match("^@bot%s+(.*)$")
+        if not rest then return false end
+    end
+    local command = rest:gsub("^%s+", ""):gsub("%s+$", "")
 
     if command == "" then
         core.chat_send_player(player_name,
