@@ -67,6 +67,28 @@ Bot:    砍完了，木頭掉在你腳邊。
 | OpenRouter | `https://openrouter.ai/api/v1/chat/completions` | `openai/gpt-4o-mini` |
 | Local Ollama | `http://localhost:11434/v1/chat/completions` | `llama3.1:8b` |
 
+## Running tests
+
+Unit tests use [busted](https://olivinelabs.com/busted/), the standard Lua test framework.
+
+```sh
+# One-time setup (Ubuntu / Debian)
+sudo apt-get install lua5.3 luarocks
+sudo luarocks install busted
+
+# Run the suite
+./scripts/run-tests.sh
+# or
+busted --verbose spec/
+```
+
+Tests cover the pure logic that does not depend on the Luanti runtime:
+`aibot.executor.resolve_target` (R3 target-description resolution) and
+`aibot.planner.parse_response` (OpenAI-compat tool_call parsing).
+
+Runtime tests against a real Mineclonia server are separate and require
+setting up a headless minetestserver — see the CI setup once M2d lands.
+
 ## Multi-agent workflow
 
 This project is also an experiment in multi-agent AI development. See [`docs/SPEC.md`](docs/SPEC.md#multi-agent-workflow-留痕) for the collaboration receipt.

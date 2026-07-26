@@ -87,6 +87,46 @@ sequence of tool calls. Rules:
 - If you cannot fulfill the request, use say() to explain briefly.
 ]]
 
+-- Parse an OpenAI-compat chat completion response into a list of { name, args }
+-- tool calls. Handles:
+--   * `message.tool_calls` (function calling)
+--   * `message.content` fallback (treated as a say() call)
+--   * Missing / malformed fields (returns empty list, does not crash)
+-- Pure function: no side effects, no engine calls. `json_parser` is injectable
+-- so unit tests can supply their own without needing the Luanti runtime.
+function aibot.planner.parse_response(response, json_parser)
+    local calls = {}
+    if not response or type(response) ~= "table" then return calls end
+
+    local choice = response.choices and response.choices[1]
+    if not choice or not choice.message then return calls end
+
+    local msg = choice.message
+    json_parser = json_parser or (core and core.parse_json) or function() return nil end
+
+    if msg.tool_calls and type(msg.tool_calls) == "table" and #msg.tool_calls > 0 then
+        for _, call in ipairs(msg.tool_calls) do
+            local fn_info = call["function"] or call.func or {}
+            local fn_name = fn_info.name or call.name
+            local args_raw = fn_info.arguments or call.arguments or "{}"
+            local args
+            if type(args_raw) == "string" then
+                args = json_parser(args_raw)
+            elseif type(args_raw) == "table" then
+                args = args_raw
+            end
+            if type(args) ~= "table" then args = {} end
+            if fn_name and fn_name ~= "" then
+                table.insert(calls, { name = fn_name, args = args })
+            end
+        end
+    elseif msg.content and msg.content ~= "" then
+        table.insert(calls, { name = "say", args = { text = msg.content } })
+    end
+
+    return calls
+end
+
 function aibot.planner.plan(luaentity, nl_command)
     if not luaentity or not luaentity._owner then return end
     local owner = luaentity._owner
@@ -110,27 +150,13 @@ function aibot.planner.plan(luaentity, nl_command)
             return
         end
 
-        local choice = response.choices and response.choices[1]
-        if not choice or not choice.message then
-            core.chat_send_player(owner, "[aibot] LLM 回應格式異常")
+        local calls = aibot.planner.parse_response(response, core.parse_json)
+        if #calls == 0 then
+            core.chat_send_player(owner, "[aibot] LLM 沒回東西")
             return
         end
-
-        local msg = choice.message
-
-        if msg.tool_calls and #msg.tool_calls > 0 then
-            for _, call in ipairs(msg.tool_calls) do
-                local fn_info  = call["function"] or call.func or {}
-                local fn_name  = fn_info.name or call.name
-                local args_raw = fn_info.arguments or call.arguments or "{}"
-                local args     = type(args_raw) == "string" and core.parse_json(args_raw) or args_raw
-                if type(args) ~= "table" then args = {} end
-                aibot.executor.queue(luaentity, fn_name, args)
-            end
-        elseif msg.content and msg.content ~= "" then
-            aibot.executor.queue(luaentity, "say", { text = msg.content })
-        else
-            core.chat_send_player(owner, "[aibot] LLM 沒回東西")
+        for _, call in ipairs(calls) do
+            aibot.executor.queue(luaentity, call.name, call.args)
         end
     end)
 end

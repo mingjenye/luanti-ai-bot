@@ -15,8 +15,9 @@ aibot.executor.say = say
 -- ─── target resolution ──────────────────────────────────────────
 -- LLM gives target descriptions ("nearest tree"); we resolve here at execution
 -- time against current world state. This is R3's mitigation pattern.
+-- Exposed on aibot.executor so it can be unit-tested with mocks.
 
-local function resolve_target(luaentity, description)
+function aibot.executor.resolve_target(luaentity, description)
     if not description or description == "" then return nil end
     local desc = tostring(description):lower()
 
@@ -62,7 +63,7 @@ end
 ACTIONS.go_to = function(self, args)
     local target_pos = nil
     if args.target then
-        target_pos = resolve_target(self, args.target)
+        target_pos = aibot.executor.resolve_target(self, args.target)
     elseif args.x and args.y and args.z then
         target_pos = { x = args.x, y = args.y, z = args.z }
     end

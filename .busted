@@ -1,0 +1,10 @@
+-- busted config; see https://olivinelabs.com/busted/
+return {
+    _all = {
+        lpath  = "./?.lua;./src/?.lua;./spec/?.lua",
+        pattern = "_spec",
+    },
+    default = {
+        ROOT = { "spec/" },
+    },
+}
