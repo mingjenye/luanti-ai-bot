@@ -169,4 +169,45 @@ describe("aibot.planner.parse_response", function()
         local response = { choices = { { message = { content = "" } } } }
         assert.are.equal(0, #aibot_local.planner.parse_response(response))
     end)
+
+    -- ─── unknown tool names ───────────────────────────────────────
+    -- Planner is a shape-transformer, not a security boundary. It passes
+    -- unknown names through verbatim. The whitelist enforcement point is
+    -- aibot.executor.queue (see executor_spec.lua). This test documents
+    -- the intended architecture (per frank's PR#2 safety review).
+
+    it("passes unknown tool names through unchanged (executor is the whitelist)", function()
+        local response = {
+            choices = { {
+                message = {
+                    tool_calls = { {
+                        ["function"] = { name = "hack_admin", arguments = "{}" },
+                    } },
+                },
+            } },
+        }
+        local calls = aibot_local.planner.parse_response(response, function() return {} end)
+        assert.are.equal(1, #calls)
+        assert.are.equal("hack_admin", calls[1].name)
+        -- executor.queue will reject this — see executor_spec.lua
+    end)
+
+    it("passes mixed known + unknown tool calls through in order", function()
+        local response = {
+            choices = { {
+                message = {
+                    tool_calls = {
+                        { ["function"] = { name = "say",         arguments = "{}" } },
+                        { ["function"] = { name = "delete_world", arguments = "{}" } },
+                        { ["function"] = { name = "stop",        arguments = "{}" } },
+                    },
+                },
+            } },
+        }
+        local calls = aibot_local.planner.parse_response(response, function() return {} end)
+        assert.are.equal(3, #calls)
+        assert.are.equal("say",          calls[1].name)
+        assert.are.equal("delete_world", calls[2].name)
+        assert.are.equal("stop",         calls[3].name)
+    end)
 end)

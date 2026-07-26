@@ -1,9 +1,26 @@
 -- src/executor.lua — whitelist action executor for the 9 MVP actions
 --
--- Tool calls from LLM are validated against ACTIONS table below.
--- Any name not in ACTIONS is rejected. This is the security boundary.
+-- Tool calls from LLM are validated against the ACTIONS table below.
+-- Any name not in ACTIONS is rejected here. This is the security boundary
+-- (planner passes tool_call names through verbatim; the enforcement point
+-- is `aibot.executor.queue`).
 
 aibot.executor = {}
+
+-- Bounds guard for go_to: reject targets more than N blocks from the bot.
+-- Rationale (per frank's safety review of PR #2):
+--   * LLMs occasionally hallucinate absurd coordinates (e.g. 1e6, 1e6).
+--   * mcl_mobs pathfinding is basic and would spin trying to reach them.
+--   * Absurd coordinates can also load unnecessary map chunks.
+local MAX_GO_TO_DISTANCE = 100
+
+-- Pure distance helper, exposed for unit testing.
+function aibot.executor.distance(a, b)
+    local dx = (a.x or 0) - (b.x or 0)
+    local dy = (a.y or 0) - (b.y or 0)
+    local dz = (a.z or 0) - (b.z or 0)
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
 
 local function say(luaentity, text)
     if luaentity._owner then
@@ -65,10 +82,22 @@ ACTIONS.go_to = function(self, args)
     if args.target then
         target_pos = aibot.executor.resolve_target(self, args.target)
     elseif args.x and args.y and args.z then
-        target_pos = { x = args.x, y = args.y, z = args.z }
+        target_pos = { x = tonumber(args.x), y = tonumber(args.y), z = tonumber(args.z) }
+        if not target_pos.x or not target_pos.y or not target_pos.z then
+            say(self, "go_to 座標無效")
+            return
+        end
     end
     if not target_pos then
         say(self, "找不到目標：" .. tostring(args.target or "(no target)"))
+        return
+    end
+    -- Distance guard (frank safety review)
+    local bot_pos = self.object and self.object:get_pos() or {x=0, y=0, z=0}
+    local dist = aibot.executor.distance(bot_pos, target_pos)
+    if dist > MAX_GO_TO_DISTANCE then
+        say(self, string.format("目標太遠（%d blocks，上限 %d）",
+            math.floor(dist), MAX_GO_TO_DISTANCE))
         return
     end
     if mobs and mobs.gopath then
@@ -83,19 +112,22 @@ ACTIONS.go_to = function(self, args)
 end
 
 ACTIONS.pickup_nearby = function(self, args)
+    -- Safety (frank safety review): do NOT remove item entities before we
+    -- have a real inventory to store them in. Data loss is worse than a
+    -- stub. This action becomes real in M2b when detached inventory lands.
     local pos = self.object:get_pos()
     local radius = tonumber(args.radius) or 3
     local objects = core.get_objects_inside_radius(pos, radius)
-    local picked = 0
+    local visible = 0
     for _, obj in ipairs(objects) do
         local ent = obj:get_luaentity()
         if ent and ent.name == "__builtin:item" then
-            -- MVP: destroy item entity, log pickup. TODO: real detached inventory.
-            obj:remove()
-            picked = picked + 1
+            visible = visible + 1
         end
     end
-    say(self, "撿了 " .. picked .. " 個物品（MVP：暫存於記憶體）")
+    say(self, string.format(
+        "附近有 %d 個掉落物（撿取功能等 M2b detached inventory 完成後啟用；目前不動它們避免資料遺失）",
+        visible))
 end
 
 ACTIONS.drop_to_player = function(self, args)
@@ -157,3 +189,4 @@ function aibot.executor.tick(luaentity, dtime)
 end
 
 aibot.executor.ACTIONS = ACTIONS  -- exposed for planner (tool schema derivation)
+aibot.executor.MAX_GO_TO_DISTANCE = MAX_GO_TO_DISTANCE
